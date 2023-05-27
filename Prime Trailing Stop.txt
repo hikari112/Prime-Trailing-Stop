@@ -1,0 +1,123 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Chart Prime
+
+//@version=5
+indicator("Prime Trailing Stop", overlay = true)
+
+// Custom cosh function
+cosh(float x) =>
+    (math.exp(x) + math.exp(-x)) / 2
+
+// Custom acosh function
+acosh(float x) =>
+    x < 1 ? na : math.log(x + math.sqrt(x * x - 1))
+
+// Custom sinh function
+sinh(float x) =>
+    (math.exp(x) - math.exp(-x)) / 2
+
+// Custom asinh function
+asinh(float x) =>
+    math.log(x + math.sqrt(x * x + 1))
+
+// Chebyshev Type I Moving Average
+chebyshevI(float src, float len, float ripple) =>
+    a = 0.
+    b = 0.
+    g = 0.
+    chebyshev = 0.
+    
+    a := cosh(1 / len * acosh(1 / (1 - ripple)))
+    b := sinh(1 / len * asinh(1 / ripple))
+    g := (a - b) / (a + b)
+    chebyshev := (1 - g) * src + g * nz(chebyshev[1])
+    chebyshev
+
+// Chebyshev Type II Moving Average
+chebyshevII(float src, float len, float ripple) =>
+    a = 0.
+    b = 0.
+    g = 0.
+    chebyshev = 0.
+    
+    a := cosh(1 / len * acosh(1 / ripple))
+    b := sinh(1 / len * asinh(ripple))
+    g := (a - b) / (a + b)
+    chebyshev := (1 - g) * src + g * nz(chebyshev[1], src)
+    chebyshev
+
+chebyshev(float src, float length, float ripple, bool style) =>
+    style ?
+     chebyshevI(src, length, ripple) :
+     chebyshevII(src, length, ripple)
+
+trailingStop(src, length, anchor, volWeight) =>
+    var float smoothed = na
+    var float vol = na
+    var float counter = na
+    daily_reset = (anchor <= time)
+    
+    Volume = volWeight ? volume : 1
+    counter := daily_reset ? counter[1] + 1 : 1
+    Alpha = 2 / (length + 1)
+    vol := daily_reset ? Alpha * Volume + (1 - Alpha) * nz(vol[1]) : na
+    smoothed := daily_reset ? Alpha * (src * Volume) + (1 - Alpha) * nz(smoothed[1]) : na
+    out = smoothed/vol
+    out
+
+// Input variables
+starting_time = input.time(0, "Starting Time", "Pick where you entered", confirm = true)
+direction = input.string("Long", "Direction", ["Long", "Short"] , confirm = true)
+source = direction == "Long" ? low : high
+multiplier = input.float(1.5, "Multiplier", 0.125, 10, 0.125, confirm = true)
+max_length = input.int(10) 
+up_color = input.color(color.new(color.green, 20), "Up Color")
+down_color = input.color(color.new(color.red, 20), "Down Color")
+style = false
+atr_style = false
+atr_length = 64
+atr_ripple = 0.05
+
+// Calculating atr and mean
+var float atr = na
+var float mean = na 
+src = starting_time >= time ? source : na
+bar_index_to_time = int((time - starting_time) / (time - time[1]))
+
+bool bar_direction = bar_index >= bar_index_to_time
+if bar_direction
+    atr := chebyshev(atr_style ? high - low : math.abs(open - close), atr_length, atr_ripple, style)
+    mean := trailingStop(source, max_length, starting_time, true)
+
+// Calculating offset
+var float stop_level = na
+var float new_stop_level = na
+stop_level := na(stop_level[1]) ? (direction == "Long" ? mean - mean * multiplier : mean + atr * multiplier) : stop_level[1]
+
+// Clamping effect
+if direction == "Long" and not na(mean)
+    new_stop_level := math.max(mean - atr * multiplier, stop_level) 
+
+if direction == "Short" and not na(mean)
+    new_stop_level := math.min(mean + atr * multiplier, stop_level) 
+
+stop_level := new_stop_level
+
+
+// Check for cross
+var scross = false
+signal = stop_level
+cross = ta.cross(ta.sma(close, 2), signal)
+if cross 
+    scross := true
+    alert("Stop Out", alert.freq_once_per_bar_close)
+
+// Set color based on trend
+colour = direction == "Long" ? up_color : down_color 
+
+// Calculate plot value
+plot_value = scross ? na : signal 
+alertcondition(scross and not scross[1], "Stop Loss Activated")
+// Plot the Chebyshev Trend
+plot(plot_value, "Chebyshev Trend", colour, style = plot.style_linebr)
+plotshape(scross and not scross[1], "Stop", shape.square, color = color.red)
